@@ -1,0 +1,1 @@
+const fs=require('node:fs'); const path=require('node:path'); const source=path.join(__dirname,'../node_modules/monaco-editor/min/vs'); fs.cpSync(source,path.join(__dirname,'../public/monaco/vs'),{recursive:true});

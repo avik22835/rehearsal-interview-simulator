@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/
+*.log
+*.tsbuildinfo
+.pytest_cache/
+apps/desktop/generated/
+
+apps/web/public/monaco/
+vendor/chatgpt-gateway/.git-backup/

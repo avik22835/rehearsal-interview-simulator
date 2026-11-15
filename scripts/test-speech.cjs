@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs'),vm=require('node:vm');
+const ts=require('../apps/web/node_modules/typescript');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../apps/web/src/lib/speech.ts'),'utf8');
+const exportsObject={};vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:exportsObject,Blob,DataView,ArrayBuffer,Float32Array,Math});
+const {speechSegments,pcmWave}=exportsObject;
+let result=speechSegments('Use 3.14 seconds, e.g. for a test. What follows');
+assert.equal(result.segments.join(' '),'Use 3.14 seconds, e.g. for a test.');
+assert.equal(speechSegments('What is next?').segments.length,1);
+assert.equal(speechSegments('Wait for 3.').segments.length,0);
+assert.equal(speechSegments('What is next?',true).segments[0],'What is next?');
+assert.equal(speechSegments('{"question":"metadata"}',true).segments.length,0);
+assert.equal(speechSegments('```python\nhi```',true).segments.length,0);
+const long='word '.repeat(300).trim();result=speechSegments(long,true);
+assert.ok(result.segments.every(value=>value.length<=550));assert.equal(result.segments.join(' '),long);
+(async()=>{const wave=await pcmWave([new Float32Array(48000).fill(.25)],48000).arrayBuffer();const view=new DataView(wave);assert.equal(view.getUint32(24,true),16000);assert.equal(view.getUint32(40,true),32000);assert.equal(view.getInt16(44,true),8191);console.log('Speech boundaries, metadata rejection, no truncation, and PCM conversion passed.');})();

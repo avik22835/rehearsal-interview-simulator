@@ -1,0 +1,155 @@
+// Local verification helper: requires the isolated test database and controlled provider.
+if(process.env.REHEARSAL_ISOLATED_UI_TEST!=='1') throw new Error('Start isolated test services and set REHEARSAL_ISOLATED_UI_TEST=1. Never run against your personal interview database.');
+const {chromium}=require('C:/Users/KIIT0001/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const http=require('node:http');
+const fs=require('node:fs');const os=require('node:os');const path=require('node:path');
+const problem={title:'Add two integers',statement:'Return the sum of two integers.',constraints:['Integers only'],io_mode:'function',entry_point:'solve',starter_code:'def solve(a, b):\n    pass\n',examples:[{label:'Example 1',args:[2,3],kwargs:{},stdin:'',expected:5,comparison:'exact'}],notes:''};
+(async()=>{
+ const observed=[];
+ const model=http.createServer((req,res)=>{let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+  let latest={};try{const input=JSON.parse(body||'{}');latest=JSON.parse(input.messages?.at(-1)?.content||'{}');}catch{}
+  let content=JSON.stringify({clarification:null,problem});
+  if(latest.task==='interview_turn'){observed.push(latest);content=`What invariant does your current draft preserve? Turn ${observed.length}.\nINTERVIEW_FEEDBACK_JSON:\n`+JSON.stringify({feedback:observed.length>1?{summary:'Explain the reasoning behind this draft.',strengths:[],improvements:[],dimensions:[],next_steps:['Check a boundary case.']}:null});}
+  if(['submission_report','final_report','feedback_report'].includes(latest.task)){
+   const codeSource=latest.evidence_sources?.find(s=>s.kind==='code');const runSource=latest.evidence_sources?.find(s=>s.kind==='run');
+   const codeEvidence=codeSource?[{source_id:codeSource.id,quote:codeSource.text.split('\n')[0]}]:[];
+   const runEvidence=runSource?[{source_id:runSource.id,quote:runSource.text.split('\n').find(line=>line.startsWith('Cases passed:'))}]:[];
+   const review={summary:'The frozen attempt was reviewed against its recorded public example. This is not a complete correctness proof.',strengths:codeEvidence.length?[{text:'The submitted code defines the entry point.',evidence:codeEvidence}]:[],improvements:runEvidence.length?[{text:'Inspect the captured public-example result and test another boundary case.',evidence:runEvidence}]:[],dimensions:['Clarification','Correctness','Complexity','Edge cases','Code quality','Communication'].map(name=>({name,score:name==='Code quality'&&codeEvidence.length?3:name==='Correctness'&&runEvidence.length?1:null,reasoning:name==='Code quality'?'The frozen code was inspected.':name==='Correctness'?'The recorded public example is limited evidence.':'Insufficient evidence for this dimension.',evidence:name==='Code quality'?codeEvidence:name==='Correctness'?runEvidence:[]})),next_steps:['Inspect the failed case before resubmitting.']};
+   content=JSON.stringify({[latest.task==='feedback_report'?'feedback':'report']:review});
+  }
+  res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content}}]}));
+ });});await new Promise(r=>model.listen(19894,'127.0.0.1',r));
+ const browser=await chromium.launch({channel:'msedge',headless:true,args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream']});const page=await browser.newPage({viewport:{width:1440,height:1000},permissions:['microphone']});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ try{
+ await page.route('**/api/**',async route=>{if(route.request().url().endsWith('/voice/transcribe'))return route.fulfill({json:{text:'I am testing this invariant by voice.'}});const response=await route.fetch({url:route.request().url().replace('127.0.0.1:3001','127.0.0.1:8001'),headers:{...route.request().headers(),origin:'http://127.0.0.1:3000'}});await route.fulfill({response});});
+ for(const item of await(await page.request.get('http://127.0.0.1:8001/api/coding/resources')).json())await page.request.delete('http://127.0.0.1:8001/api/coding/resources/'+item.id);
+ await page.request.put('http://127.0.0.1:8001/api/settings',{data:{kind:'compatible',base_url:'http://127.0.0.1:19894/v1',model:'controlled-test',stream:false}});
+ const session=await (await page.request.post('http://127.0.0.1:8001/api/sessions',{data:{mode:'dsa',provider:'compatible',remote_consent:true,topic:'Workspace browser verification'}})).json();
+ await page.goto('http://127.0.0.1:3001');await page.getByRole('button',{name:new RegExp(session.title.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'))}).first().click();
+ await page.getByRole('radio',{name:/^Question or topic/}).check();
+ await page.getByRole('checkbox',{name:/I have the complete question/}).check();
+ await page.getByLabel('Complete question, examples and constraints').fill('Return the sum of two integers. Example: 2 plus 3 gives 5.');
+ await page.getByRole('checkbox',{name:/^Send/}).check();await page.getByRole('button',{name:'Prepare workspace',exact:true}).click();
+ await page.getByText('main.py',{exact:true}).waitFor();await page.locator('.monaco-editor textarea').first().waitFor();
+ await page.locator('.monaco-editor').first().click();await page.keyboard.press('Control+a');await page.keyboard.insertText('def solve(a, b):\n    return a + b\n');
+ await page.getByRole('button',{name:/Run examples/}).click();await page.getByText('All selected cases passed',{exact:true}).waitFor({timeout:30000});
+ await page.getByRole('tab',{name:'Testcases',exact:true}).click();
+ await page.getByRole('button',{name:'Custom case',exact:true}).click();
+ await page.getByLabel('Custom test input',{exact:true}).fill('[7,8]');
+ await page.getByLabel('Custom expected output',{exact:true}).fill('15');
+ await page.getByRole('button',{name:/Run custom case/}).click();
+ await page.getByText('All selected cases passed',{exact:true}).waitFor({timeout:30000});
+ const detail=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/coding')).json();
+ if(detail.runs[0].result.test_source!=='custom'||detail.runs[0].result.cases[0].actual!==15)throw Error('Custom case failed');
+ await page.getByRole('tab',{name:'Testcases',exact:true}).click();
+ await page.getByLabel('Custom test input',{exact:true}).fill('not JSON');
+ await page.getByRole('button',{name:/Run custom case/}).click();
+ await page.locator('.custom-case-form [role=alert]').waitFor();
+ const unchanged=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/coding')).json();
+ if(unchanged.runs.length!==2)throw Error('Invalid custom JSON created a run');
+ await page.getByLabel('Custom test input',{exact:true}).fill('[7,8]');
+ await page.getByRole('tab',{name:'Test result',exact:true}).click();
+ await page.getByRole('button',{name:'Editor preferences',exact:true}).click();if(!await page.getByLabel('Dark editor',{exact:true}).isChecked())throw Error('Editor is not dark by default');await page.getByLabel('Editor font size').selectOption('16');await page.getByRole('button',{name:'Close editor preferences'}).click();
+ await page.getByRole('button',{name:'Focus editor',exact:true}).click();await page.getByRole('button',{name:'Exit editor focus',exact:true}).click();
+ await page.getByRole('separator',{name:'Resize problem panel'}).focus();await page.keyboard.press('ArrowRight');
+ await page.getByRole('button',{name:'Interviewer',exact:true}).click();
+ const draftA='def solve(a, b):\n    # unfinished draft A\n    return a - b\n';
+ await page.locator('.monaco-editor').first().click();await page.keyboard.press('Control+a');await page.keyboard.insertText(draftA);
+ await page.waitForFunction(id=>(localStorage.getItem('rehearsal-code-'+id)||'').includes('unfinished draft A'),detail.workspace.id);
+ const actualA=await page.evaluate(id=>localStorage.getItem('rehearsal-code-'+id),detail.workspace.id);
+ await page.getByRole('button',{name:'Begin interview',exact:true}).click();
+ await page.locator('.interviewer-message.assistant').getByText(/Turn 1/).waitFor();
+ if(observed[0]?.coding_context?.code!==actualA||observed[0].coding_context.latest_run.matches_current_code!==false)throw Error('Opening did not capture the unsaved code and stale run');
+ const draftB='def solve(a, b):\n    # unfinished draft B\n    return a * b\n';
+ await page.locator('.monaco-editor').first().click();await page.keyboard.press('Control+a');await page.keyboard.insertText(draftB);
+ await page.waitForFunction(id=>(localStorage.getItem('rehearsal-code-'+id)||'').includes('unfinished draft B'),detail.workspace.id);
+ const actualB=await page.evaluate(id=>localStorage.getItem('rehearsal-code-'+id),detail.workspace.id);
+ await page.getByRole('button',{name:'Record answer',exact:true}).click();await page.getByRole('button',{name:/Stop ·/}).waitFor();await page.waitForTimeout(700);await page.getByRole('button',{name:/Stop ·/}).click();await page.getByLabel('Review your answer').waitFor();await page.getByLabel('Review your answer').fill('I am testing this invariant by voice.');await page.getByRole('button',{name:'Send answer + current code',exact:true}).click();
+ await page.locator('.interviewer-message.assistant').getByText(/Turn 2/).waitFor();
+ if(observed[1]?.coding_context?.code!==actualB)throw Error('Follow-up omitted the current editor draft');
+ const voiceSnapshot=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id)).json();if(!voiceSnapshot.messages.some(message=>message.role==='user'&&message.content==='I am testing this invariant by voice.'))throw Error('Voice follow-up omitted its corrected transcript');
+ await page.getByRole('button',{name:'Submit attempt',exact:true}).click();
+ await page.getByLabel('Your reasoning',{exact:false}).fill('Multiplication is provisional; I need to check the operation.');
+ await page.getByRole('button',{name:'Submit & run examples',exact:true}).click();
+ await page.getByRole('button',{name:'Review submitted attempt',exact:true}).waitFor();
+ const submitted=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/coding')).json();
+ const frozen=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/coding/attempts/'+submitted.attempts[0].id)).json();
+ if(frozen.content.code!==actualB||frozen.run.result.cases[0].actual!==6||frozen.run.result.cases[0].status!=='failed')throw Error('Submission did not freeze and execute the exact draft');
+ await page.locator('.monaco-editor').first().click();await page.keyboard.press('Control+a');await page.keyboard.insertText('def solve(a, b):\n    # after submission edits\n    return a + b\n');
+ await page.waitForFunction(id=>(localStorage.getItem('rehearsal-code-'+id)||'').includes('after submission edits'),detail.workspace.id);
+ await page.getByRole('button',{name:'Review submitted attempt',exact:true}).click();
+ await page.getByRole('button',{name:/^Submitted code/}).first().waitFor();
+ await page.getByRole('button',{name:/^Submitted code/}).first().click();
+ await page.locator('.captured-evidence-view pre').filter({hasText:'unfinished draft B'}).waitFor();
+ if(!await page.evaluate(id=>(localStorage.getItem('rehearsal-code-'+id)||'').includes('after submission edits'),detail.workspace.id))throw Error('Review overwrote the current editor draft');
+ await page.screenshot({path:'data/submission-code-evidence.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('button',{name:'Close source',exact:true}).click();
+ await page.getByRole('button',{name:/^Recorded public-example run/}).first().click();
+ await page.locator('.captured-evidence-view pre').filter({hasText:'Cases passed: 0/1'}).waitFor();
+ await page.screenshot({path:'data/submission-run-evidence.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('tab',{name:'Test result',exact:true}).click();
+ await page.screenshot({path:'data/coding-workspace-browser.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('button',{name:'Close interviewer panel'}).click();
+ await page.setViewportSize({width:1366,height:768});await page.screenshot({path:'data/coding-workspace-laptop.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('button',{name:'Switch to light theme',exact:true}).click();await page.screenshot({path:'data/coding-workspace-light.png',fullPage:true,animations:'disabled'});await page.getByRole('button',{name:'Switch to dark theme',exact:true}).click();
+ const runBox=await page.getByRole('button',{name:/Run custom case/}).boundingBox();if(!runBox||runBox.y+runBox.height>768)throw Error('Run control falls below laptop viewport: '+JSON.stringify(runBox));
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'data/coding-workspace-mobile.png',fullPage:true,animations:'disabled'});
+ if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Mobile horizontal overflow');
+ await page.setViewportSize({width:1440,height:1000});
+ 
+ await page.getByRole('button',{name:'Change problem'}).click();
+ await page.screenshot({path:'data/coding-source-picker.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('radio',{name:/^Choose from my notes/}).check();
+ if(await page.getByRole('radio').count()!==3)throw Error('Expected exactly three question choices');
+ await page.getByText('Upload question files or a topic folder',{exact:true}).click();
+ const notes=fs.mkdtempSync(path.join(os.tmpdir(),'rehearsal-notes-'));const root=path.join(notes,'Interview notes');
+ fs.mkdirSync(path.join(root,'Arrays'),{recursive:true});fs.mkdirSync(path.join(root,'Graphs'),{recursive:true});
+ fs.writeFileSync(path.join(root,'Arrays','Two Sum.md'),'Original source: add two integers. Example: 2 + 3 = 5. Constraints: integers.');
+ fs.writeFileSync(path.join(root,'Graphs','BFS.txt'),'Traverse a graph using a breadth first queue.');
+ await page.getByLabel('Upload topic folder',{exact:true}).setInputFiles(root);
+ await page.getByRole('button',{name:'Save 2 questions locally',exact:true}).click();
+ await page.getByLabel('Filter questions by topic').selectOption('Graphs');
+ await page.getByRole('button',{name:/^BFS/}).waitFor();
+ if(await page.getByRole('button',{name:/^Two Sum/}).count())throw Error('Topic filter did not hide other questions');
+ await page.getByLabel('Filter questions by topic').selectOption('*');
+ await page.getByLabel('Search resource text').fill('queue');
+ await page.getByRole('button',{name:/^BFS/}).waitFor();
+ await page.waitForFunction(()=>!Array.from(document.querySelectorAll('.resource-list button')).some(b=>b.textContent.includes('Two Sum')));
+ await page.getByLabel('Search resource text').fill('');
+ await page.getByLabel('Filter questions by topic').selectOption('Arrays');
+ await page.getByRole('button',{name:/^Two Sum/}).click();
+ await page.screenshot({path:'data/coding-library-topic-picker.png',fullPage:true,animations:'disabled'});
+ await page.getByRole('checkbox',{name:/^Send/}).check();await page.getByRole('button',{name:'Prepare workspace',exact:true}).click();
+ await page.getByText('Original source: add two integers. Example: 2 + 3 = 5. Constraints: integers.',{exact:true}).waitFor();
+ for(const source of ['generate','random']){
+  await page.getByRole('button',{name:'Change problem'}).click();
+  await page.getByRole('radio',{name:source==='generate'?/^Question or topic/:/^Surprise me/}).check();
+  if(source==='generate'){
+   await page.getByRole('checkbox',{name:/I have the complete question/}).uncheck();
+   await page.getByLabel('Question name, topic or description').fill('Two Sum');
+  }else await page.getByLabel('Topic preference (optional)').fill('');
+  await page.getByRole('checkbox',{name:/^Send/}).check();await page.getByRole('button',{name:'Prepare workspace',exact:true}).click();
+  await page.getByText('main.py',{exact:true}).waitFor();
+  await page.getByText('Return the sum of two integers.',{exact:true}).waitFor();
+ }
+ const draftC='def solve(a, b):\n    # conversation tab draft\n    pass\n';
+ await page.locator('.monaco-editor textarea').first().waitFor();await page.locator('.monaco-editor').first().click();await page.keyboard.press('Control+a');await page.keyboard.insertText(draftC);
+ const currentWorkspace=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/coding')).json();
+ await page.waitForFunction(id=>(localStorage.getItem('rehearsal-code-'+id)||'').includes('conversation tab draft'),currentWorkspace.workspace.id);
+ const actualC=await page.evaluate(id=>localStorage.getItem('rehearsal-code-'+id),currentWorkspace.workspace.id);
+ await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.locator('.answer-form textarea').fill('Please inspect the current draft.');await page.locator('.answer-form .send-button').click();
+ await page.locator('.message.assistant').getByText(/Turn 3/).waitFor();
+ if(observed[2]?.coding_context?.code!==actualC)throw Error('Conversation tab omitted the current local draft');
+ const exported=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/export')).json();
+ if(exported.coding_turn_contexts.length!==3)throw Error('Turn snapshots were not retained');
+ page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'End session',exact:true}).click();
+ await page.getByRole('button',{name:'Regenerate assessment',exact:true}).waitFor();
+ await page.getByRole('button',{name:/^Submitted code/}).first().click();await page.locator('.captured-evidence-view pre').filter({hasText:'unfinished draft B'}).waitFor();
+ await page.screenshot({path:'data/submission-final-report.png',fullPage:true,animations:'disabled'});
+ const finalExport=await(await page.request.get('http://127.0.0.1:8001/api/sessions/'+session.id+'/export')).json();
+ if(finalExport.coding_attempts.length!==1||!finalExport.assessments.some(a=>a.kind==='final'&&a.status==='complete'))throw Error('Submitted attempt/final report export failed');
+ console.log(JSON.stringify({passed:true,routes:['pasted text','selected note','question name','surprise'],topicFolderImport:true,keywordAndTopicFilters:true,darkEditorDefault:true,automaticEditorContext:true,immutableSubmission:true,codeAndRunCitations:true,finalReport:true,errors,session:session.id}));
+ 
+ if(errors.length)throw Error(errors.join(';'));
+ }catch(e){console.log((await page.locator("body").innerText()).slice(-6500));await page.screenshot({path:"data/coding-workspace-failure.png",fullPage:true,animations:'disabled'});throw e;}finally{await browser.close();model.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
